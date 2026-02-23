@@ -20,6 +20,8 @@
         <slf4j.version>2.0.9</slf4j.version>
         <jackson.version>2.16.1</jackson.version>
         <extentreports.version>5.1.1</extentreports.version>
+        <!-- Override via: mvn test -Drunner=SmokeTestRunner -->
+        <runner>SmokeTestRunner</runner>
     </properties>
 
     <dependencies>
@@ -82,7 +84,7 @@
                 <version>3.2.3</version>
                 <configuration>
                     <includes>
-                        <include>**/SmokeTestRunner.java</include>
+                        <include>**/${runner}.java</include>
                     </includes>
                 </configuration>
             </plugin>

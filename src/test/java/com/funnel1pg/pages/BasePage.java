@@ -1,7 +1,6 @@
 package com.funnel1pg.pages;
 
 import com.microsoft.playwright.Page;
-import com.microsoft.playwright.options.WaitForSelectorState;
 
 public abstract class BasePage {
 
@@ -18,13 +17,8 @@ public abstract class BasePage {
         catch (Exception e) { return false; }
     }
 
-    protected void waitForVisible(String selector) {
-        page.waitForSelector(selector,
-                new Page.WaitForSelectorOptions().setState(WaitForSelectorState.VISIBLE));
-    }
-
     protected String getText(String selector) {
-        try { return page.locator(selector).first().textContent(); }
+        try { return page.locator(selector).first().textContent().trim(); }
         catch (Exception e) { return ""; }
     }
 

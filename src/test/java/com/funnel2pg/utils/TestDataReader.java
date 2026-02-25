@@ -1,4 +1,4 @@
-package com.funnel1pg.utils;
+package com.funnel2pg.utils;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;

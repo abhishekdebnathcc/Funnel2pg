@@ -1,4 +1,4 @@
-package com.funnel1pg.pages;
+package com.funnel2pg.pages;
 
 import com.microsoft.playwright.Page;
 import java.util.List;

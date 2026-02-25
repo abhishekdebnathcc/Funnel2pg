@@ -1,4 +1,4 @@
-package com.funnel1pg.utils;
+package com.funnel2pg.utils;
 
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.options.LoadState;

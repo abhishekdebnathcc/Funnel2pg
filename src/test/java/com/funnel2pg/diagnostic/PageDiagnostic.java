@@ -1,7 +1,7 @@
-package com.funnel1pg.diagnostic;
+package com.funnel2pg.diagnostic;
 
-import com.funnel1pg.config.ConfigReader;
-import com.funnel1pg.utils.PlaywrightManager;
+import com.funnel2pg.config.ConfigReader;
+import com.funnel2pg.utils.PlaywrightManager;
 import com.microsoft.playwright.Page;
 
 /**

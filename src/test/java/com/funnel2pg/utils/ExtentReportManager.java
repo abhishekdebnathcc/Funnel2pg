@@ -1,10 +1,10 @@
-package com.funnel1pg.utils;
+package com.funnel2pg.utils;
 
 import com.aventstack.extentreports.ExtentReports;
 import com.aventstack.extentreports.ExtentTest;
 import com.aventstack.extentreports.reporter.ExtentSparkReporter;
 import com.aventstack.extentreports.reporter.configuration.Theme;
-import com.funnel1pg.config.ConfigReader;
+import com.funnel2pg.config.ConfigReader;
 
 import java.nio.file.Paths;
 
@@ -20,7 +20,7 @@ public class ExtentReportManager {
 
             ExtentSparkReporter spark = new ExtentSparkReporter(reportPath);
             spark.config().setTheme(Theme.STANDARD);
-            spark.config().setDocumentTitle("Funnel1pg – Test Execution Report");
+            spark.config().setDocumentTitle("Funnel2pg – Test Execution Report");
             spark.config().setReportName("Smoke Test Suite – Power Pro Heat Funnel");
             spark.config().setEncoding("utf-8");
 

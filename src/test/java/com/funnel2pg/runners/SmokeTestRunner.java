@@ -1,4 +1,4 @@
-package com.funnel1pg.runners;
+package com.funnel2pg.runners;
 
 import org.junit.platform.suite.api.ConfigurationParameter;
 import org.junit.platform.suite.api.IncludeEngines;
@@ -13,7 +13,7 @@ import static io.cucumber.junit.platform.engine.Constants.*;
 @ConfigurationParameter(key = PLUGIN_PROPERTY_NAME,
         value = "pretty, html:reports/cucumber-report.html, json:reports/cucumber-report.json, junit:reports/cucumber-report.xml")
 @ConfigurationParameter(key = GLUE_PROPERTY_NAME,
-        value = "com.funnel1pg.stepdefs, com.funnel1pg.hooks")
+        value = "com.funnel2pg.stepdefs, com.funnel2pg.hooks")
 @ConfigurationParameter(key = FILTER_TAGS_PROPERTY_NAME, value = "@smoke")
 public class SmokeTestRunner {
 }

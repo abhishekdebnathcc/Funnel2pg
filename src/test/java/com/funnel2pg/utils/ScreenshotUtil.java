@@ -1,6 +1,6 @@
-package com.funnel1pg.utils;
+package com.funnel2pg.utils;
 
-import com.funnel1pg.config.ConfigReader;
+import com.funnel2pg.config.ConfigReader;
 import com.microsoft.playwright.Page;
 import java.nio.file.Paths;
 import java.time.LocalDateTime;

@@ -1,10 +1,10 @@
-package com.funnel1pg.hooks;
+package com.funnel2pg.hooks;
 
 import com.aventstack.extentreports.Status;
-import com.funnel1pg.config.ConfigReader;
-import com.funnel1pg.utils.ExtentReportManager;
-import com.funnel1pg.utils.PlaywrightManager;
-import com.funnel1pg.utils.ReportOpener;
+import com.funnel2pg.config.ConfigReader;
+import com.funnel2pg.utils.ExtentReportManager;
+import com.funnel2pg.utils.PlaywrightManager;
+import com.funnel2pg.utils.ReportOpener;
 import com.microsoft.playwright.Page;
 import io.cucumber.java.After;
 import io.cucumber.java.AfterAll;

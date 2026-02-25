@@ -4,8 +4,8 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>com.funnel1pg</groupId>
-    <artifactId>Funnel1pg</artifactId>
+    <groupId>com.funnel2pg</groupId>
+    <artifactId>Funnel2pg</artifactId>
     <version>1.0-SNAPSHOT</version>
     <packaging>jar</packaging>
 

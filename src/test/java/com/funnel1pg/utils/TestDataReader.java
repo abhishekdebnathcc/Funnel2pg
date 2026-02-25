@@ -24,4 +24,16 @@ public class TestDataReader {
     public static String getPayment(String field) {
         return checkoutData.path("payment").path(field).asText();
     }
+
+    public static boolean isRandomizeEnabled() {
+        return checkoutData.path("randomize").path("enabled").asBoolean(false);
+    }
+
+    public static long getRandomizeSeed() {
+        return checkoutData.path("randomize").path("seed").asLong(12345);
+    }
+
+    public static String getCustomerOverride(String field) {
+        return checkoutData.path("customerOverride").path(field).asText("");
+    }
 }

@@ -5,6 +5,7 @@ import com.funnel1pg.config.ConfigReader;
 import com.funnel1pg.pages.CheckoutPage;
 import com.funnel1pg.pages.ThankYouPage;
 import com.funnel1pg.pages.UpsellPage;
+import com.funnel1pg.utils.DataRandomizer;
 import com.funnel1pg.utils.ExtentReportManager;
 import com.funnel1pg.utils.PlaywrightManager;
 import com.funnel1pg.utils.TestDataReader;
@@ -20,18 +21,19 @@ import java.util.function.Predicate;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Funnel1pg Test Automation - Main Step Definitions
- * 
- * Handles complete funnel checkout flow:
- * 1. Primary order submission
- * 2. Post-purchase page detection
- * 3. Upsell loop processing with error handling
- * 4. Order verification on thank you page
- * 
- * Error Handling:
- * - Detects "You have already purchased this trial offer" error
- * - Skips test gracefully when error occurs
- * - Logs error code and proceeds to next test
+ * CheckoutStepDefs – step definitions for the complete funnel flow.
+ *
+ * PAGE DETECTION uses the <meta name="page-type"> tag injected by the CMS:
+ *   content="upsell"    → UpsellPage
+ *   content="thank-you" → ThankYouPage
+ *
+ * UPSELL FLOW (per page):
+ *   1. a.btn-upsell                   → add product
+ *   2. div.shipping-option.shipping-method-div → select shipping
+ *   3. button.submit-upsell-btn       → accept & continue
+ *
+ * ERROR HANDLING:
+ *   "You have already purchased this trial offer" → skip test via JUnit assumption
  */
 public class CheckoutStepDefs {
 
@@ -39,16 +41,15 @@ public class CheckoutStepDefs {
     private CheckoutPage checkoutPage;
     private UpsellPage   upsellPage;
     private ThankYouPage thankYouPage;
-    
-    // State tracking for funnel flow
-    private String originalOrderNumber;
-    private double originalOrderPrice;
-    private boolean onThankYouPage = false;
-    
-    // Error handling and skip tracking
+
+    private boolean onThankYouPage      = false;
     private boolean testShouldBeSkipped = false;
-    private String skipReason = "";
-    private String errorCode = "";
+    private String  skipReason          = "";
+    private String  errorCode           = "";
+
+    private static final int MAX_UPSELLS = 10;
+
+    // ── Init ──────────────────────────────────────────────────────────────────
 
     private void init() {
         page         = PlaywrightManager.getPage();
@@ -57,10 +58,18 @@ public class CheckoutStepDefs {
         thankYouPage = new ThankYouPage(page);
     }
 
+    // ── Logging ───────────────────────────────────────────────────────────────
+
     private void log(String msg) {
         System.out.println(msg);
         var t = ExtentReportManager.getTest();
         if (t != null) t.log(Status.INFO, msg);
+    }
+
+    private void logWarn(String msg) {
+        System.out.println("⚠ " + msg);
+        var t = ExtentReportManager.getTest();
+        if (t != null) t.log(Status.WARNING, msg);
     }
 
     private void logError(String msg) {
@@ -75,8 +84,31 @@ public class CheckoutStepDefs {
         if (t != null) t.log(Status.SKIP, "SKIPPED: " + msg);
     }
 
-    // ===== NAVIGATION & SETUP =====
-    
+    private void divider(String label) {
+        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        log(label);
+        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /**
+     * Reads the <meta name="page-type"> content attribute.
+     * Returns "upsell", "thank-you", "checkout", or "" if absent.
+     */
+    private String getMetaPageType() {
+        try {
+            String val = page.getAttribute("meta[name='page-type']", "content");
+            return val != null ? val.trim().toLowerCase() : "";
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    // =========================================================================
+    // GIVEN – Navigation
+    // =========================================================================
+
     @Given("I navigate to the checkout page")
     public void navigateToCheckout() {
         init();
@@ -85,8 +117,10 @@ public class CheckoutStepDefs {
         log("📄 Loaded: " + page.url());
     }
 
-    // ===== MAIN CHECKOUT FLOW =====
-    
+    // =========================================================================
+    // WHEN – Checkout Form
+    // =========================================================================
+
     @When("I select a product on the main page")
     public void selectProduct() {
         checkoutPage.selectFirstAvailableProduct();
@@ -96,14 +130,14 @@ public class CheckoutStepDefs {
     @When("I fill in the shipping address with valid details")
     public void fillShippingAddress() {
         checkoutPage.fillShippingAddress(
-                TestDataReader.getCustomer("firstName"),
-                TestDataReader.getCustomer("lastName"),
-                TestDataReader.getCustomer("address"),
-                TestDataReader.getCustomer("city"),
-                TestDataReader.getCustomer("state"),
-                TestDataReader.getCustomer("zipCode"),
-                TestDataReader.getCustomer("email"),
-                TestDataReader.getCustomer("phone")
+                DataRandomizer.getCustomerField("firstName"),
+                DataRandomizer.getCustomerField("lastName"),
+                DataRandomizer.getCustomerField("address"),
+                DataRandomizer.getCustomerField("city"),
+                DataRandomizer.getCustomerField("state"),
+                DataRandomizer.getCustomerField("zipCode"),
+                DataRandomizer.getCustomerField("email"),
+                DataRandomizer.getCustomerField("phone")
         );
         log("✓ Shipping address filled");
     }
@@ -111,7 +145,7 @@ public class CheckoutStepDefs {
     @When("I select a shipping method")
     public void selectShipping() {
         checkoutPage.selectShippingMethod();
-        log("✓ Shipping method: Vande Shipping (pre-selected)");
+        log("✓ Shipping method set");
     }
 
     @When("I fill in the payment details with test card")
@@ -123,19 +157,18 @@ public class CheckoutStepDefs {
                 TestDataReader.getPayment("expiryYear"),
                 TestDataReader.getPayment("cvv")
         );
-        log("✓ Payment filled (test card)");
+        log("✓ Payment filled");
     }
 
     @When("I fill in the payment details with invalid card")
     public void fillInvalidPayment() {
         checkoutPage.fillPaymentDetails(
-                "visa",
-                "1234567890123456",
+                "visa", "1234567890123456",
                 TestDataReader.getPayment("expiryMonth"),
                 TestDataReader.getPayment("expiryYear"),
                 "000"
         );
-        log("✓ Payment filled (invalid card)");
+        log("✓ Invalid payment filled");
     }
 
     @When("I accept the terms and conditions")
@@ -144,405 +177,382 @@ public class CheckoutStepDefs {
         log("✓ Terms accepted");
     }
 
-    // ===== PRIMARY ORDER SUBMISSION =====
-    
     @When("I click the complete purchase button")
     public void clickPurchase() {
-        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        log("📦 SUBMITTING PRIMARY ORDER");
-        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        
+        divider("📦 SUBMITTING PRIMARY ORDER");
         checkoutPage.clickCompletePurchase();
-        
-        // Wait for navigation away from checkout
-        Predicate<String> notCheckout = url -> !url.contains("checkout");
+
+        // Wait until URL is no longer the checkout page
+        Predicate<String> leftCheckout = url -> !url.toLowerCase().contains("/checkout");
         try {
-            page.waitForURL(notCheckout,
-                    new Page.WaitForURLOptions().setTimeout(20_000));
+            page.waitForURL(leftCheckout, new Page.WaitForURLOptions().setTimeout(20_000));
         } catch (Exception e) {
             page.waitForLoadState();
-            page.waitForTimeout(3000);
+            page.waitForTimeout(3_000);
         }
-        
-        log("✓ Post-purchase URL: " + page.url());
+        log("✓ Post-submit URL: " + page.url());
     }
 
-    // ===== POST-PURCHASE PAGE DETECTION & ROUTING =====
-    
+    // =========================================================================
+    // THEN – Post-Purchase Page Detection
+    // =========================================================================
+
+    /**
+     * After primary order submission, detect whether we landed on:
+     *   • thank-you page  → capture order details, mark done
+     *   • upsell page     → log and continue (loop handles the rest)
+     *   • unknown         → fail with clear message
+     *
+     * Uses <meta name="page-type"> as the primary signal.
+     */
     @Then("I should be taken to an upsell page or thank you page")
     public void verifyPostPurchasePage() {
-        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        log("🔍 DETECTING POST-PURCHASE PAGE TYPE");
-        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        
+        divider("🔍 DETECTING POST-PURCHASE PAGE TYPE");
         page.waitForLoadState();
-        String currentUrl = page.url();
-        log("📍 Current URL: " + currentUrl);
-        
-        // Check if we're on thank you page
-        if (thankYouPage.isThankYouPageDisplayed()) {
+
+        String url      = page.url();
+        String pageType = getMetaPageType();
+
+        log("📍 URL      : " + url);
+        log("📌 page-type: " + (pageType.isEmpty() ? "(meta not found)" : pageType));
+
+        if ("thank-you".equals(pageType) || thankYouPage.isThankYouPageDisplayed()) {
             onThankYouPage = true;
-            log("✓ LANDED ON THANK YOU PAGE (Primary Order Success)");
-            captureOrderDetails();
+            log("✓ Landed on THANK YOU PAGE");
+            captureAndLogOrderDetails();
             return;
         }
-        
-        // Check if we're on upsell page
-        if (upsellPage.isUpsellPage()) {
+
+        if ("upsell".equals(pageType) || upsellPage.isUpsellPage()) {
             onThankYouPage = false;
-            log("✓ LANDED ON UPSELL PAGE (Primary Order Success - Offer Available)");
+            log("✓ Landed on UPSELL PAGE");
             return;
         }
-        
-        // Fallback: if URL changed from checkout, assume success
-        if (!currentUrl.contains("checkout")) {
-            log("✓ Successfully left checkout page");
+
+        // Fallback: we navigated away from checkout — treat as post-purchase success
+        if (!url.toLowerCase().contains("/checkout")) {
+            logWarn("Page type undetermined but left checkout – continuing");
             return;
         }
-        
-        assertTrue(false,
-                "Expected upsell or thank-you page after purchase, got: " + currentUrl);
+
+        assertTrue(false, "Expected upsell or thank-you page after purchase, got: " + url);
     }
 
-    // ===== UPSELL FLOW WITH LOOPING & ERROR HANDLING =====
-    
+    // =========================================================================
+    // AND – Upsell Loop
+    // =========================================================================
+
+    /**
+     * Loops through upsell pages until the thank-you page is reached.
+     *
+     * Per iteration:
+     *   1. Check for "already purchased" error → skip
+     *   2. Confirm still on upsell page (meta page-type = "upsell")
+     *   3. Add product   → a.btn-upsell
+     *   4. Select ship   → div.shipping-option.shipping-method-div
+     *   5. Accept        → button.submit-upsell-btn
+     *   6. Wait for URL to change
+     *   7. Check new page: thank-you → done | upsell → next iteration
+     */
     @And("I navigate through any upsell pages")
     public void navigateUpsells() {
-        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        log("🛒 PROCESSING UPSELL FUNNEL");
-        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        
-        // If already on thank you, no upsells to process
+        divider("🛒 PROCESSING UPSELL FUNNEL");
+
         if (onThankYouPage) {
-            log("ℹ Already on thank-you page → no upsells to process");
+            log("ℹ Already on Thank-You page – no upsells to process");
             return;
         }
-        
+
         int upsellCount = 0;
-        int maxUpsells = 10; // Safety limit to prevent infinite loops
-        
-        while (upsellCount < maxUpsells) {
+
+        while (upsellCount < MAX_UPSELLS) {
             page.waitForLoadState();
-            String currentUrl = page.url();
-            
+            String currentUrl  = page.url();
+            String pageType    = getMetaPageType();
+
             log("");
-            log("┌─────────────────────────────────────────────");
-            log("│ UPSELL ITERATION #" + (upsellCount + 1));
+            log("┌──────────────────────────────────────────────────");
+            log("│ ITERATION #" + (upsellCount + 1) + "  |  page-type: " + pageType);
             log("│ URL: " + currentUrl);
-            log("└─────────────────────────────────────────────");
-            
-            // ===== CHECK FOR ERROR: "You have already purchased this trial offer" =====
-            if (checkForAlreadyPlacedOfferError()) {
-                log("🚫 SKIPPING TEST: Trial offer already purchased!");
-                logSkip("Trial offer has already been purchased. Test skipped with error code: " + errorCode);
-                testShouldBeSkipped = true;
-                skipReason = "Trial Offer Already Purchased";
-                
-                // Skip remaining upsells and proceed to next test
-                log("");
-                log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                log("⊘ Test skipped due to: " + skipReason);
-                log("⊘ Error Code: " + errorCode);
-                log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                
-                // Skip to next test by throwing AssumptionViolatedException
-                Assumptions.assumeTrue(false, "Test skipped: " + skipReason + " (Error Code: " + errorCode + ")");
-                return; // Won't reach here due to assumption, but good for clarity
+            log("└──────────────────────────────────────────────────");
+
+            // Guard: "already purchased" error
+            if (detectAlreadyPurchasedError()) {
+                handleAlreadyPurchasedError();
+                return;
             }
-            
-            // Check if we've reached thank you page
-            if (thankYouPage.isThankYouPageDisplayed()) {
-                log("✓ REACHED THANK YOU PAGE after " + upsellCount + " upsell(s)");
+
+            // Reached thank-you page
+            if ("thank-you".equals(pageType) || thankYouPage.isThankYouPageDisplayed()) {
+                log("✓ THANK YOU PAGE reached after " + upsellCount + " upsell(s)");
                 onThankYouPage = true;
-                captureOrderDetails();
+                captureAndLogOrderDetails();
                 break;
             }
-            
-            // Check if still on upsell page
-            if (!upsellPage.isUpsellPage()) {
-                log("ℹ No upsell detected → exiting loop");
+
+            // Confirm we are on an upsell page
+            if (!"upsell".equals(pageType) && !upsellPage.isUpsellPage()) {
+                logWarn("Page is neither upsell nor thank-you – exiting loop");
+                logWarn("page-type meta: '" + pageType + "'  |  URL: " + currentUrl);
                 break;
             }
-            
-            log("✓ Upsell page detected");
-            
-            // Present the upsell offer - ADD PRODUCT & CONTINUE
-            log("➤ Adding upsell product to order...");
-            addUpsellProductToOrder();
-            
-            log("➤ Selecting shipping method for upsell...");
-            selectUpsellShipping();
-            
-            log("➤ Accepting and continuing with upsell...");
-            acceptAndContinueUpsell();
-            
-            // Wait for redirect after upsell submission
+
+            log("✓ On UPSELL PAGE – processing offer");
+
+            // Step 1: Add product
+            log("  ➤ Step 1: Add product (a.btn-upsell)");
+            upsellPage.addProductToUpsell();
+
+            // Step 2: Select shipping
+            log("  ➤ Step 2: Select shipping (div.shipping-option.shipping-method-div)");
+            upsellPage.selectUpsellShipping();
+
+            // Step 3: Accept & Continue
+            log("  ➤ Step 3: Accept & Continue (button.submit-upsell-btn)");
+            upsellPage.acceptAndContinue();
+
+            // Wait for page to change
             Predicate<String> urlChanged = url -> !url.equals(currentUrl);
             try {
-                page.waitForURL(urlChanged,
-                        new Page.WaitForURLOptions().setTimeout(15_000));
-                log("✓ Upsell submitted - redirected to: " + page.url());
+                page.waitForURL(urlChanged, new Page.WaitForURLOptions().setTimeout(15_000));
+                log("  ✓ Redirected to: " + page.url());
             } catch (Exception e) {
                 page.waitForLoadState();
-                page.waitForTimeout(2000);
-                log("⚠ Timeout waiting for upsell redirect: " + e.getMessage());
+                page.waitForTimeout(2_000);
+                if (page.url().equals(currentUrl)) {
+                    logWarn("URL unchanged after upsell submit – breaking loop to avoid infinite loop");
+                    break;
+                }
+                log("  ✓ URL changed to: " + page.url());
             }
-            
+
             upsellCount++;
         }
-        
-        if (upsellCount >= maxUpsells) {
-            log("⚠ WARNING: Max upsells (" + maxUpsells + ") reached - breaking loop");
+
+        if (upsellCount >= MAX_UPSELLS) {
+            logWarn("MAX_UPSELLS (" + MAX_UPSELLS + ") reached – stopping loop");
         }
-        
-        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        log("✓ UPSELL FUNNEL COMPLETE - Final URL: " + page.url());
-        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+        divider("✓ UPSELL FUNNEL COMPLETE – Final URL: " + page.url());
     }
 
-    /**
-     * Check for "You have already purchased this trial offer" error message on upsell page
-     * EXACT ERROR MESSAGE: "You have already purchased this trial offer"
-     * @return true if error is found, false otherwise
-     */
-    private boolean checkForAlreadyPlacedOfferError() {
-        try {
-            // EXACT ERROR MESSAGE TO DETECT:
-            // "You have already purchased this trial offer"
-            
-            String errorSelectors = 
-                    // Exact match patterns
-                    "div:has-text('You have already purchased this trial offer'), " +
-                    "span:has-text('You have already purchased this trial offer'), " +
-                    "p:has-text('You have already purchased this trial offer'), " +
-                    "h1:has-text('You have already purchased this trial offer'), " +
-                    "h2:has-text('You have already purchased this trial offer'), " +
-                    
-                    // Case-insensitive variations
-                    "div:has-text('already purchased this trial'), " +
-                    "span:has-text('already purchased this trial'), " +
-                    "p:has-text('already purchased this trial'), " +
-                    
-                    // Error/Alert containers
-                    ".error:has-text('already purchased'), " +
-                    ".alert:has-text('already purchased'), " +
-                    ".warning:has-text('already purchased'), " +
-                    "[class*='error']:has-text('already purchased'), " +
-                    "[class*='alert']:has-text('already purchased'), " +
-                    "[class*='message']:has-text('already purchased'), " +
-                    "[class*='notification']:has-text('already purchased')";
-            
-            int errorCount = page.locator(errorSelectors).count();
-            
-            if (errorCount > 0) {
-                String errorMessage = page.locator(errorSelectors).first().textContent().trim();
-                log("");
-                log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                log("🚫 ERROR DETECTED ON UPSELL PAGE");
-                log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                logError("Error Message: " + errorMessage);
-                
-                // Extract error code if present
-                errorCode = extractErrorCode(errorMessage);
-                if (!errorCode.isEmpty()) {
-                    logError("Error Code: " + errorCode);
-                } else {
-                    errorCode = "ERR_TRIAL_OFFER_ALREADY_PURCHASED";
-                    logError("Error Code: " + errorCode);
-                }
-                
-                log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                
-                return true;
-            }
-            
-            return false;
-        } catch (Exception e) {
-            log("ℹ Error detection check: " + e.getMessage());
-            return false;
-        }
-    }
+    // =========================================================================
+    // THEN – Final Verification
+    // =========================================================================
 
-    /**
-     * Extract error code from error message if present
-     * Looks for patterns like "ERR-001", "ERR_001", "Code: 001", etc.
-     * @param errorMessage The error message text
-     * @return The extracted error code or empty string
-     */
-    private String extractErrorCode(String errorMessage) {
-        try {
-            // Try to find error code patterns
-            if (errorMessage.matches(".*ERR[-_]?\\d+.*")) {
-                return errorMessage.replaceAll(".*(ERR[-_]?\\d+).*", "$1");
-            }
-            if (errorMessage.matches(".*Code[:\\s]+([A-Z0-9_-]+).*")) {
-                return errorMessage.replaceAll(".*Code[:\\s]+([A-Z0-9_-]+).*", "$1");
-            }
-            if (errorMessage.matches(".*\\(([A-Z0-9]{3,}\\d+)\\).*")) {
-                return errorMessage.replaceAll(".*\\(([A-Z0-9]{3,}\\d+)\\).*", "$1");
-            }
-        } catch (Exception e) {
-            // If extraction fails, return empty string
-        }
-        return "";
-    }
-
-    // ===== UPSELL HELPER METHODS =====
-    
-    /**
-     * Add upsell product to the order
-     */
-    private void addUpsellProductToOrder() {
-        try {
-            page.locator("button:has-text('Add'), button:has-text('YES'), " +
-                    "a:has-text('Add'), a:has-text('YES'), " +
-                    "[class*='add'], [class*='accept']").first().click();
-            page.waitForTimeout(800);
-            log("✓ Upsell product added");
-        } catch (Exception e) {
-            log("⚠ Could not add upsell product: " + e.getMessage());
-        }
-    }
-
-    /**
-     * Select shipping method for upsell (if required)
-     */
-    private void selectUpsellShipping() {
-        try {
-            // Try to find and select a shipping option
-            var shippingButtons = page.locator("input[type='radio'][name*='ship'], " +
-                    "button[name*='ship'], [class*='shipping-option']").all();
-            
-            if (!shippingButtons.isEmpty()) {
-                shippingButtons.get(0).click();
-                page.waitForTimeout(500);
-                log("✓ Upsell shipping selected");
-            } else {
-                log("ℹ No shipping selection needed for upsell");
-            }
-        } catch (Exception e) {
-            log("ℹ Upsell shipping selection: " + e.getMessage());
-        }
-    }
-
-    /**
-     * Accept and continue with upsell
-     */
-    private void acceptAndContinueUpsell() {
-        try {
-            // Look for accept/continue button
-            var continueBtn = page.locator(
-                    "button:has-text('Continue'), button:has-text('Accept'), " +
-                    "button:has-text('YES'), a:has-text('Continue'), " +
-                    "a:has-text('Accept'), a:has-text('YES'), " +
-                    "[class*='continue'], [class*='accept']").first();
-            
-            continueBtn.click();
-            page.waitForTimeout(1000);
-            log("✓ Upsell accepted and continued");
-        } catch (Exception e) {
-            log("⚠ Could not accept upsell: " + e.getMessage());
-        }
-    }
-
-    // ===== FINAL VERIFICATION =====
-    
     @Then("I should land on the thank you page")
     public void verifyThankYouPage() {
-        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        log("✅ FINAL VERIFICATION - THANK YOU PAGE");
-        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        
+        divider("✅ FINAL VERIFICATION – THANK YOU PAGE");
         page.waitForLoadState();
-        boolean onThankYou = thankYouPage.isThankYouPageDisplayed();
-        
-        log("📍 Final URL     : " + page.url());
-        log("📄 Page heading  : " + thankYouPage.getHeading());
-        
-        assertTrue(onThankYou,
-                "Expected Thank You page but got: " + page.url());
-        
-        log("✓ ORDER COMPLETE → Thank You page confirmed!");
-        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    }
 
-    /**
-     * Capture and verify all order details from thank you page
-     */
-    private void captureOrderDetails() {
-        log("");
-        log("📋 VERIFYING ORDER DETAILS:");
-        
-        try {
-            // Extract order number
-            String orderNumber = thankYouPage.getOrderNumber();
-            log("  • Order Number : " + orderNumber);
-            
-            // Extract order total/price
-            String orderPrice = thankYouPage.getOrderPrice();
-            log("  • Order Price   : " + orderPrice);
-            
-            // Extract shipping address
-            String shippingAddress = thankYouPage.getShippingAddress();
-            log("  • Shipping Addr : " + (shippingAddress.length() > 50 
-                    ? shippingAddress.substring(0, 50) + "..." 
-                    : shippingAddress));
-            
-            // Extract order items
-            String orderItems = thankYouPage.getOrderItems();
-            log("  • Items Ordered : " + (orderItems.length() > 50 
-                    ? orderItems.substring(0, 50) + "..." 
-                    : orderItems));
-            
-            log("✓ Order details verified");
-        } catch (Exception e) {
-            log("⚠ Error capturing order details: " + e.getMessage());
+        String pageType = getMetaPageType();
+        log("📍 Final URL    : " + page.url());
+        log("📌 page-type    : " + pageType);
+        log("📄 Page heading : " + thankYouPage.getHeading());
+
+        boolean confirmed = "thank-you".equals(pageType) || thankYouPage.isThankYouPageDisplayed();
+
+        assertTrue(confirmed, "Expected Thank-You page (page-type=thank-you) but got: " + page.url());
+
+        if (!onThankYouPage) {
+            captureAndLogOrderDetails();
         }
+
+        log("✓ ORDER COMPLETE → Thank-You page confirmed!");
     }
 
-    // ===== VALIDATION & ERROR CHECKING =====
-    
+    // =========================================================================
+    // VALIDATION SCENARIOS
+    // =========================================================================
+
     @When("I click the complete purchase button without filling any fields")
     public void clickPurchaseEmpty() {
         checkoutPage.clickCompletePurchase();
-        page.waitForTimeout(1500);
-        log("📋 Submitted empty form → checking validation errors");
+        page.waitForTimeout(1_500);
     }
 
     @Then("I should see required field validation errors on the form")
     public void verifyValidationErrors() {
         boolean hasErrors = checkoutPage.hasValidationErrors();
-        log("✓ Validation errors present: " + hasErrors);
-        assertTrue(hasErrors,
-                "Expected form validation errors after empty submission");
+        log("✓ Validation errors: " + hasErrors);
+        assertTrue(hasErrors, "Expected validation errors after empty form submission");
     }
 
     @Then("I should see a payment error message")
     public void verifyPaymentError() {
         boolean hasError = checkoutPage.hasPaymentError();
-        log("✓ Payment error present: " + hasError);
-        assertTrue(hasError,
-                "Expected payment error for invalid card");
+        log("✓ Payment error: " + hasError);
+        assertTrue(hasError, "Expected payment error for invalid card");
+    }
+
+    // =========================================================================
+    // PRIVATE HELPERS
+    // =========================================================================
+
+    /**
+     * Waits for JS to populate all thank-you page values, then logs them
+     * to both the console AND the Extent report as a formatted HTML table.
+     */
+    private void captureAndLogOrderDetails() {
+        try {
+            // Wait for JS to finish populating the page (order_id, cart items, address)
+            thankYouPage.waitForPageToPopulate();
+
+            String orderId   = thankYouPage.getOrderNumber();
+            String subtotal  = thankYouPage.getSubtotal();
+            String shipping  = thankYouPage.getShippingTotal();
+            String total     = thankYouPage.getOrderPrice();
+            String name      = thankYouPage.getFullName();
+            String email     = thankYouPage.getEmail();
+            String phone     = thankYouPage.getPhone();
+            String address   = thankYouPage.getStreetAddress();
+            String city      = thankYouPage.getCity();
+            String state     = thankYouPage.getState();
+            String zip       = thankYouPage.getZip();
+            java.util.List<String> items = thankYouPage.getOrderItemLines();
+
+            // ── Console log ──────────────────────────────────────────────────
+            System.out.println("");
+            System.out.println("┌─────────────────────────────────────────────────────┐");
+            System.out.println("│                   📋 ORDER DETAILS                  │");
+            System.out.println("├─────────────────────────────────────────────────────┤");
+            System.out.println("│  Order ID      : " + orderId);
+            System.out.println("│  ─────────────────────────────────────────────────  │");
+            System.out.println("│  Name          : " + name);
+            System.out.println("│  Email         : " + email);
+            System.out.println("│  Phone         : " + phone);
+            System.out.println("│  Address       : " + address);
+            System.out.println("│  City          : " + city);
+            System.out.println("│  State         : " + state);
+            System.out.println("│  Zip           : " + zip);
+            System.out.println("│  ─────────────────────────────────────────────────  │");
+            if (items.isEmpty()) {
+                System.out.println("│  Items         : " + thankYouPage.getOrderItems());
+            } else {
+                for (String item : items) System.out.println("│  Item          : " + item);
+            }
+            System.out.println("│  ─────────────────────────────────────────────────  │");
+            System.out.println("│  Subtotal      : " + subtotal);
+            System.out.println("│  Shipping      : " + shipping);
+            System.out.println("│  Total         : " + total);
+            System.out.println("└─────────────────────────────────────────────────────┘");
+
+            // ── Extent Report HTML table ─────────────────────────────────────
+            StringBuilder itemRows = new StringBuilder();
+            if (items.isEmpty()) {
+                itemRows.append("<tr><td>Items</td><td colspan='2'>")
+                        .append(thankYouPage.getOrderItems()).append("</td></tr>");
+            } else {
+                for (int i = 0; i < items.size(); i++) {
+                    itemRows.append("<tr><td>").append(i == 0 ? "Items" : "")
+                            .append("</td><td colspan='2'>").append(items.get(i))
+                            .append("</td></tr>");
+                }
+            }
+
+            String html = "<div style='font-family:monospace;font-size:13px;'>"
+                + "<table border='1' cellpadding='6' cellspacing='0' "
+                + "style='border-collapse:collapse;width:100%;background:#f9f9ff;"
+                + "border:1px solid #c0c0e0;'>"
+                + "<thead><tr style='background:#3f51b5;color:white;font-size:14px;'>"
+                + "<th colspan='3'>📋 ORDER CONFIRMATION DETAILS</th></tr></thead>"
+                + "<tbody>"
+                // Order ID – highlighted
+                + "<tr style='background:#e8f5e9;font-weight:bold;font-size:14px;'>"
+                + "<td width='25%'>🔖 Order ID</td>"
+                + "<td colspan='2' style='color:#1b5e20;font-size:15px;'>" + orderId + "</td></tr>"
+                // Shipping address section
+                + "<tr style='background:#e3f2fd;'><td colspan='3'><strong>📦 Shipping Address</strong></td></tr>"
+                + "<tr><td>Name</td><td colspan='2'>" + name + "</td></tr>"
+                + "<tr><td>Email</td><td colspan='2'>" + email + "</td></tr>"
+                + "<tr><td>Phone</td><td colspan='2'>" + phone + "</td></tr>"
+                + "<tr><td>Address</td><td colspan='2'>" + address + "</td></tr>"
+                + "<tr><td>City</td><td colspan='2'>" + city + "</td></tr>"
+                + "<tr><td>State</td><td colspan='2'>" + state + "</td></tr>"
+                + "<tr><td>Zip</td><td colspan='2'>" + zip + "</td></tr>"
+                // Items section
+                + "<tr style='background:#fff3e0;'><td colspan='3'><strong>🛒 Items Ordered</strong></td></tr>"
+                + itemRows
+                // Totals section
+                + "<tr style='background:#fce4ec;'><td colspan='3'><strong>💰 Order Totals</strong></td></tr>"
+                + "<tr><td>Subtotal</td><td colspan='2'>" + subtotal + "</td></tr>"
+                + "<tr><td>Shipping</td><td colspan='2'>" + shipping + "</td></tr>"
+                + "<tr style='background:#e8f5e9;font-weight:bold;font-size:14px;'>"
+                + "<td>Total</td><td colspan='2' style='color:#1b5e20;'>" + total + "</td></tr>"
+                + "</tbody></table></div>";
+
+            var extentTest = ExtentReportManager.getTest();
+            if (extentTest != null) {
+                extentTest.log(Status.INFO, "<b>✅ ORDER CONFIRMED</b>");
+                extentTest.info(com.aventstack.extentreports.markuputils.MarkupHelper
+                        .createLabel("Order ID: " + orderId,
+                                com.aventstack.extentreports.markuputils.ExtentColor.GREEN));
+                extentTest.log(Status.INFO, html);
+            }
+
+        } catch (Exception e) {
+            logWarn("Could not fully capture order details: " + e.getMessage());
+        }
     }
 
     /**
-     * Get skip status
+     * Detects "You have already purchased this trial offer" on the current page.
      */
-    public boolean isTestSkipped() {
-        return testShouldBeSkipped;
+    private boolean detectAlreadyPurchasedError() {
+        try {
+            String selectors =
+                    "div:has-text('already purchased this trial'), " +
+                    "span:has-text('already purchased this trial'), " +
+                    "p:has-text('already purchased this trial'), " +
+                    ".error:has-text('already purchased'), " +
+                    "#inline-error:has-text('already purchased'), " +
+                    "[class*='error']:has-text('already purchased')";
+
+            if (page.locator(selectors).count() > 0) {
+                String text = page.locator(selectors).first().textContent().trim();
+                logError("Already-purchased error: " + text);
+                errorCode = extractErrorCode(text);
+                if (errorCode.isEmpty()) errorCode = "ERR_TRIAL_OFFER_ALREADY_PURCHASED";
+                return true;
+            }
+
+            // Body text fallback
+            String body = page.locator("body").textContent().toLowerCase();
+            if (body.contains("already purchased this trial")) {
+                logError("Already-purchased error detected via body text");
+                errorCode = "ERR_TRIAL_OFFER_ALREADY_PURCHASED";
+                return true;
+            }
+            return false;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
-    /**
-     * Get skip reason
-     */
-    public String getSkipReason() {
-        return skipReason;
+    private void handleAlreadyPurchasedError() {
+        testShouldBeSkipped = true;
+        skipReason = "Trial Offer Already Purchased";
+        divider("⊘ SKIPPING TEST");
+        logSkip("Reason    : " + skipReason);
+        logSkip("Error Code: " + errorCode);
+        Assumptions.assumeTrue(false,
+                "Test skipped: " + skipReason + " (Error Code: " + errorCode + ")");
     }
 
-    /**
-     * Get error code
-     */
-    public String getErrorCode() {
-        return errorCode;
+    private String extractErrorCode(String msg) {
+        try {
+            if (msg.matches(".*ERR[-_]?\\d+.*"))
+                return msg.replaceAll(".*(ERR[-_]?\\d+).*", "$1");
+        } catch (Exception ignored) { }
+        return "";
     }
+
+    private String truncate(String s, int max) {
+        if (s == null) return "";
+        return s.length() > max ? s.substring(0, max) + "…" : s;
+    }
+
+    public boolean isTestSkipped() { return testShouldBeSkipped; }
+    public String  getSkipReason() { return skipReason; }
+    public String  getErrorCode()  { return errorCode; }
 }

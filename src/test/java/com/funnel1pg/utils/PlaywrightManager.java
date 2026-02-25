@@ -10,6 +10,10 @@ public class PlaywrightManager {
     private static final ThreadLocal<BrowserContext> contextTL    = new ThreadLocal<>();
     private static final ThreadLocal<Page>           pageTL       = new ThreadLocal<>();
 
+    /**
+     * Always launches a fresh browser instance for each scenario.
+     * Never reuses an existing session.
+     */
     public static void initBrowser() {
         Playwright playwright = Playwright.create();
         playwrightTL.set(playwright);
@@ -38,10 +42,14 @@ public class PlaywrightManager {
     public static Page           getPage()    { return pageTL.get(); }
     public static BrowserContext getContext() { return contextTL.get(); }
 
+    /**
+     * Fully closes the browser instance and all associated resources.
+     * Call this only for scenarios that should NOT leave the browser open.
+     */
     public static void closeBrowser() {
-        if (pageTL.get()       != null) { pageTL.get().close();       pageTL.remove(); }
-        if (contextTL.get()    != null) { contextTL.get().close();    contextTL.remove(); }
-        if (browserTL.get()    != null) { browserTL.get().close();    browserTL.remove(); }
-        if (playwrightTL.get() != null) { playwrightTL.get().close(); playwrightTL.remove(); }
+        if (pageTL.get()       != null) { try { pageTL.get().close();       } catch (Exception ignored) {} pageTL.remove(); }
+        if (contextTL.get()    != null) { try { contextTL.get().close();    } catch (Exception ignored) {} contextTL.remove(); }
+        if (browserTL.get()    != null) { try { browserTL.get().close();    } catch (Exception ignored) {} browserTL.remove(); }
+        if (playwrightTL.get() != null) { try { playwrightTL.get().close(); } catch (Exception ignored) {} playwrightTL.remove(); }
     }
 }

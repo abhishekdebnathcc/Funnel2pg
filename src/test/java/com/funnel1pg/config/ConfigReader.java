@@ -22,7 +22,11 @@ public class ConfigReader {
         return System.getProperty(key, properties.getProperty(key, "")).trim();
     }
 
-    public static String getBaseUrl()            { return get("base.url"); }
+    public static String getBaseUrl() {
+        // System property -Dbase.url has highest priority
+        return get("base.url");
+    }
+
     public static String getBrowser()            { return get("browser"); }
     public static boolean isHeadless()           { return Boolean.parseBoolean(get("headless")); }
     public static int getSlowMo()                { return Integer.parseInt(get("slow.mo")); }

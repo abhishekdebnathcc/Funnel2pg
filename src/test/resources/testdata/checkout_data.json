@@ -1,17 +1,17 @@
 {
   "customer": {
-    "firstName": "John",
-    "lastName": "Doe",
-    "email": "johndoe.test@mailinator.com",
-    "phone": "5559876543",
-    "address": "123 Test Street Austin TX",
-    "city": "Austin",
-    "state": "Texas",
-    "zipCode": "78701",
+    "firstName": "Michael",
+    "lastName": "Johnson",
+    "email": "michael.johnson@mailinator.com",
+    "phone": "4155551234",
+    "address": "1825 Oak Ridge Drive",
+    "city": "San Francisco",
+    "state": "California",
+    "zipCode": "94103",
     "country": "United States"
   },
   "payment": {
-    "cardType": "visa",
+    "cardType": "master",
     "cardNumber": "4111111111111111",
     "expiryMonth": "(01) January",
     "expiryYear": "2030",

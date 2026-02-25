@@ -4,190 +4,218 @@ import com.microsoft.playwright.Page;
 
 public class ThankYouPage extends BasePage {
 
-    private static final String HEADING_SELECTOR =
-            "h1:has-text('Thank'), h2:has-text('Thank'), " +
-            "h1:has-text('Order Confirmed'), h2:has-text('Order Confirmed'), " +
-            "h1:has-text('Success'), h2:has-text('Success'), " +
-            ".thank-you-title, [class*='thank']";
+    private static final String META_PAGE_TYPE  = "meta[name='page-type']";
+    private static final String ORDER_ID        = "#order_id_holder";
+    private static final String TOTAL           = "#total";
+    private static final String SUBTOTAL        = "#subtotal";
+    private static final String SHIPPING_TOTAL  = "#shipping_total";
+    private static final String FIRST_NAME      = "#firstName";
+    private static final String LAST_NAME       = "#lastName";
+    private static final String ADDRESS         = "#shippingAddress1";
+    private static final String CITY            = "#shippingCity";
+    private static final String STATE           = "#shippingState";
+    private static final String ZIP             = "#shippingZip";
+    private static final String EMAIL           = "#email";
+    private static final String PHONE           = "#phone";
+    private static final String PRODUCT_DETAILS = "#product-details";
 
     public ThankYouPage(Page page) { super(page); }
 
-    // ===== PAGE DETECTION =====
-    
+    // ── Detection ─────────────────────────────────────────────────────────────
+
     public boolean isThankYouPageDisplayed() {
-        String url = getCurrentUrl().toLowerCase();
-        if (url.contains("thank") || url.contains("confirm") ||
-            url.contains("success") || url.contains("receipt")) return true;
         try {
-            return page.locator(HEADING_SELECTOR).count() > 0;
-        } catch (Exception e) { return false; }
+            String pt = page.getAttribute(META_PAGE_TYPE, "content");
+            if ("thank-you".equalsIgnoreCase(pt)) return true;
+        } catch (Exception ignored) {}
+        try {
+            if (getCurrentUrl().toLowerCase().contains("/thank-you")) return true;
+        } catch (Exception ignored) {}
+        try {
+            if (page.locator(ORDER_ID).count() > 0) return true;
+        } catch (Exception ignored) {}
+        return false;
     }
 
-    // ===== PAGE CONTENT EXTRACTION =====
-    
     public String getHeading() {
-        try {
-            return page.locator("h1, h2").first().textContent().trim();
-        } catch (Exception e) { return "(no heading found)"; }
+        try { return page.locator("h1, h2").first().textContent().trim(); }
+        catch (Exception e) { return "(no heading)"; }
     }
 
-    public String getOrderConfirmationText() {
-        try {
-            return page.locator("body").textContent()
-                    .replaceAll("\\s+", " ").trim().substring(0, 300);
-        } catch (Exception e) { return "(body not available)"; }
-    }
+    // ── Wait for JS to populate the page ─────────────────────────────────────
 
-    // ===== ORDER DETAIL EXTRACTION =====
-    
     /**
-     * Extract order number from thank you page
-     * Looks for common patterns: "Order #123456", "Order Number:", etc.
+     * Waits until JS has fully populated the thank-you page:
+     *   - sessionStorage cart data rendered into #product-details
+     *   - order_id set either from URL param or mergeSaleSuccess event
+     *   - address spans filled from localStorage checkoutData
+     *
+     * Also reads the order_id directly from the URL query param as a fallback,
+     * and injects it into #order_id_holder if the element is still empty.
+     */
+    public void waitForPageToPopulate() {
+        // 1. Wait for DOMContentLoaded + JS execution
+        page.waitForLoadState(com.microsoft.playwright.options.LoadState.DOMCONTENTLOADED);
+        page.waitForTimeout(2000);
+
+        // 2. Read order_id from URL ?order_id= param and inject into element if empty
+        try {
+            page.evaluate(
+                "(function() {" +
+                "  var params = new URLSearchParams(window.location.search);" +
+                "  var orderId = params.get('order_id');" +
+                "  var holder = document.getElementById('order_id_holder');" +
+                "  if (holder && (!holder.textContent || !holder.textContent.trim()) && orderId) {" +
+                "    holder.textContent = orderId;" +
+                "  }" +
+                "})();"
+            );
+        } catch (Exception ignored) {}
+
+        // 3. Wait up to 5s for #order_id_holder to be non-empty
+        try {
+            page.waitForFunction(
+                "document.getElementById('order_id_holder') && " +
+                "document.getElementById('order_id_holder').textContent.trim().length > 0",
+                null,
+                new Page.WaitForFunctionOptions().setTimeout(5000)
+            );
+        } catch (Exception ignored) {
+            // Not every funnel returns an order_id in the URL — that's OK
+        }
+
+        // 4. Wait for product-details to be rendered (populated from sessionStorage)
+        try {
+            page.waitForFunction(
+                "document.getElementById('product-details') && " +
+                "document.getElementById('product-details').children.length > 0",
+                null,
+                new Page.WaitForFunctionOptions().setTimeout(5000)
+            );
+        } catch (Exception ignored) {}
+
+        // 5. Extra buffer for address spans (filled from localStorage)
+        page.waitForTimeout(500);
+    }
+
+    // ── Order Detail Extraction ───────────────────────────────────────────────
+
+    /**
+     * Order ID — tries:
+     *   1. #order_id_holder text content (set by JS from URL param or mergeSaleSuccess)
+     *   2. ?order_id= URL query parameter directly
+     *   3. sessionStorage / localStorage via JS evaluate
      */
     public String getOrderNumber() {
+        // Try element text first
         try {
-            // Try common selectors for order number
-            var selectors = new String[] {
-                    "span:has-text('Order'), [class*='order-number'], " +
-                    "[class*='orderId'], [id*='order-num']",
-                    "p:has-text('Order')",
-                    "div:has-text('Order #')"
-            };
-            
-            for (String selector : selectors) {
-                try {
-                    String text = page.locator(selector).first().textContent();
-                    // Extract number pattern (e.g., "123456" from "Order #123456")
-                    String number = text.replaceAll("[^0-9]", "");
-                    if (!number.isEmpty()) return number;
-                } catch (Exception e) {
-                    // Continue to next selector
-                }
-            }
-            
-            return "Not found";
-        } catch (Exception e) {
-            return "Error: " + e.getMessage();
-        }
+            String text = page.locator(ORDER_ID).textContent().trim();
+            if (!text.isEmpty()) return text;
+        } catch (Exception ignored) {}
+
+        // Try URL query param directly via JS
+        try {
+            Object val = page.evaluate(
+                "new URLSearchParams(window.location.search).get('order_id')"
+            );
+            if (val != null && !val.toString().isEmpty()) return val.toString();
+        } catch (Exception ignored) {}
+
+        // Try crm_response stored in sessionStorage
+        try {
+            Object val = page.evaluate(
+                "(function() {" +
+                "  try {" +
+                "    var d = JSON.parse(sessionStorage.getItem('lastCrmResponse') || '{}');" +
+                "    return d.order_id || d.orderId || '';" +
+                "  } catch(e) { return ''; }" +
+                "})()"
+            );
+            if (val != null && !val.toString().isEmpty()) return val.toString();
+        } catch (Exception ignored) {}
+
+        return "N/A (not returned in URL)";
     }
 
-    /**
-     * Extract order price/total from thank you page
-     * Looks for: "$X.XX", "Total: $X.XX", etc.
-     */
     public String getOrderPrice() {
-        try {
-            // Try to find price/total selectors
-            var selectors = new String[] {
-                    "[class*='total'], [class*='price'], [class*='amount']",
-                    "span:has-text('$')",
-                    "div:has-text('Total')"
-            };
-            
-            for (String selector : selectors) {
-                try {
-                    String text = page.locator(selector).first().textContent();
-                    // Extract currency pattern (e.g., "$123.45")
-                    if (text.matches(".*\\$[0-9]+\\.?[0-9]*.*")) {
-                        return text.trim();
-                    }
-                } catch (Exception e) {
-                    // Continue to next selector
-                }
-            }
-            
-            return "Not found";
-        } catch (Exception e) {
-            return "Error: " + e.getMessage();
-        }
+        try { return page.locator(TOTAL).textContent().trim(); }
+        catch (Exception e) { return "N/A"; }
     }
 
-    /**
-     * Extract shipping address from thank you page
-     */
+    public String getSubtotal() {
+        try { return page.locator(SUBTOTAL).textContent().trim(); }
+        catch (Exception e) { return "N/A"; }
+    }
+
+    public String getShippingTotal() {
+        try { return page.locator(SHIPPING_TOTAL).textContent().trim(); }
+        catch (Exception e) { return "N/A"; }
+    }
+
+    public String getFullName() {
+        try {
+            String f = page.locator(FIRST_NAME).textContent().trim();
+            String l = page.locator(LAST_NAME).textContent().trim();
+            return (f + " " + l).trim();
+        } catch (Exception e) { return "N/A"; }
+    }
+
+    public String getEmail() {
+        try { return page.locator(EMAIL).textContent().trim(); }
+        catch (Exception e) { return "N/A"; }
+    }
+
+    public String getPhone() {
+        try { return page.locator(PHONE).textContent().trim(); }
+        catch (Exception e) { return "N/A"; }
+    }
+
+    public String getStreetAddress() {
+        try { return page.locator(ADDRESS).textContent().trim(); }
+        catch (Exception e) { return "N/A"; }
+    }
+
+    public String getCity() {
+        try { return page.locator(CITY).textContent().trim(); }
+        catch (Exception e) { return "N/A"; }
+    }
+
+    public String getState() {
+        try { return page.locator(STATE).textContent().trim(); }
+        catch (Exception e) { return "N/A"; }
+    }
+
+    public String getZip() {
+        try { return page.locator(ZIP).textContent().trim(); }
+        catch (Exception e) { return "N/A"; }
+    }
+
+    /** Full address line for logging. */
     public String getShippingAddress() {
-        try {
-            // Try common selectors for shipping address
-            var selectors = new String[] {
-                    "[class*='shipping-address'], [class*='ship-addr'], " +
-                    "[id*='ship-address']",
-                    "div:has-text('Address')",
-                    "p:has-text('Street')"
-            };
-            
-            for (String selector : selectors) {
-                try {
-                    String text = page.locator(selector).first().textContent();
-                    if (!text.trim().isEmpty()) return text.trim();
-                } catch (Exception e) {
-                    // Continue to next selector
-                }
-            }
-            
-            // Fallback: get any text containing numbers/street patterns
-            String bodyText = page.locator("body").textContent();
-            if (bodyText.contains("Street") || bodyText.contains("Ave") || 
-                bodyText.contains("Road") || bodyText.contains("Dr")) {
-                return bodyText.substring(0, Math.min(200, bodyText.length()));
-            }
-            
-            return "Not found";
-        } catch (Exception e) {
-            return "Error: " + e.getMessage();
-        }
+        return getStreetAddress() + ", " + getCity() + ", " + getState() + " " + getZip();
     }
 
-    /**
-     * Extract order items/products from thank you page
-     */
+    /** Raw product details text. */
     public String getOrderItems() {
-        try {
-            // Try to find items list
-            var itemElements = page.locator("[class*='order-item'], " +
-                    "[class*='product'], [class*='line-item'], " +
-                    "li:has-text('Product')").all();
-            
-            if (!itemElements.isEmpty()) {
-                StringBuilder items = new StringBuilder();
-                for (int i = 0; i < Math.min(5, itemElements.size()); i++) {
-                    String itemText = itemElements.get(i).textContent().trim();
-                    if (!itemText.isEmpty()) {
-                        items.append(itemText).append("; ");
-                    }
-                }
-                return items.toString();
-            }
-            
-            return "Not found";
-        } catch (Exception e) {
-            return "Error: " + e.getMessage();
-        }
+        try { return page.locator(PRODUCT_DETAILS).textContent().trim().replaceAll("\\s+", " "); }
+        catch (Exception e) { return "N/A"; }
     }
 
     /**
-     * Get full order summary text
+     * Returns each product as a separate line: "Product Name → $Price"
+     * Reads from the rendered divs inside #product-details.
      */
-    public String getOrderSummary() {
+    public java.util.List<String> getOrderItemLines() {
+        var lines = new java.util.ArrayList<String>();
         try {
-            // Try to find summary section
-            var selectors = new String[] {
-                    "[class*='order-summary']",
-                    "[class*='confirmation']",
-                    "section:has-text('Order')"
-            };
-            
-            for (String selector : selectors) {
+            var items = page.locator(PRODUCT_DETAILS + " > div").all();
+            for (var item : items) {
                 try {
-                    String text = page.locator(selector).first().textContent();
-                    if (!text.isEmpty()) return text.trim();
-                } catch (Exception e) {
-                    // Continue
-                }
+                    String text = item.textContent().trim().replaceAll("\\s+", " ");
+                    if (!text.isEmpty()) lines.add(text);
+                } catch (Exception ignored) {}
             }
-            
-            return "Not found";
-        } catch (Exception e) {
-            return "Error: " + e.getMessage();
-        }
+        } catch (Exception ignored) {}
+        return lines;
     }
 }

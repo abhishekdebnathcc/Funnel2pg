@@ -43,69 +43,101 @@ public class PlaywrightManager {
         return capturedOrderData.get();
     }
 
-    /**
-     * Always launches a fresh browser instance for each scenario.
-     * Never reuses an existing session.
+        /**
+     * Initialises the browser session.
+     *
+     * Default mode  : launches a fresh Chromium/Firefox/WebKit instance.
+     * CDP mode      : connects to an already-running Chrome via Chrome DevTools Protocol.
+     *
+     * Activate CDP mode from the command line:
+     *   mvn test -Dcdp=true                        # connects to localhost:9222
+     *   mvn test -Dcdp=true -Dcdp.port=9333        # custom port
+     *
+     * To start Chrome ready for CDP:
+     *   /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+     *       --remote-debugging-port=9222 --no-first-run --no-default-browser-check
      */
     public static void initBrowser() {
         Playwright playwright = Playwright.create();
         playwrightTL.set(playwright);
 
-        BrowserType.LaunchOptions opts = new BrowserType.LaunchOptions()
-                .setHeadless(ConfigReader.isHeadless())
-                .setSlowMo(ConfigReader.getSlowMo());
+        boolean cdpMode = Boolean.parseBoolean(System.getProperty("cdp", "false"));
 
-        Browser browser;
-        switch (ConfigReader.getBrowser().toLowerCase()) {
-            case "firefox": browser = playwright.firefox().launch(opts); break;
-            case "webkit":  browser = playwright.webkit().launch(opts);  break;
-            default:        browser = playwright.chromium().launch(opts);
+        if (cdpMode) {
+            // ── CDP mode: attach to existing Chrome ──────────────────────────
+            int cdpPort = Integer.parseInt(System.getProperty("cdp.port", "9222"));
+            String cdpUrl = "http://localhost:" + cdpPort;
+            System.out.println("🔌 CDP mode – connecting to existing Chrome at " + cdpUrl);
+            try {
+                Browser browser = playwright.chromium().connectOverCDP(cdpUrl);
+                browserTL.set(browser);
+
+                BrowserContext ctx = browser.contexts().isEmpty()
+                        ? browser.newContext()
+                        : browser.contexts().get(0);
+                contextTL.set(ctx);
+
+                Page page = ctx.pages().isEmpty() ? ctx.newPage() : ctx.pages().get(0);
+                page.setDefaultTimeout(ConfigReader.getTimeout());
+                attachNetworkListener(page);
+                pageTL.set(page);
+                System.out.println("✓ CDP connected – using existing browser session");
+            } catch (Exception e) {
+                throw new RuntimeException(
+                    "CDP connection failed on port " + cdpPort + ". " +
+                    "Start Chrome with: --remote-debugging-port=" + cdpPort, e);
+            }
+        } else {
+            // ── Normal mode: launch fresh browser ────────────────────────────
+            BrowserType.LaunchOptions opts = new BrowserType.LaunchOptions()
+                    .setHeadless(ConfigReader.isHeadless())
+                    .setSlowMo(ConfigReader.getSlowMo());
+
+            Browser browser;
+            switch (ConfigReader.getBrowser().toLowerCase()) {
+                case "firefox": browser = playwright.firefox().launch(opts); break;
+                case "webkit":  browser = playwright.webkit().launch(opts);  break;
+                default:        browser = playwright.chromium().launch(opts);
+            }
+            browserTL.set(browser);
+
+            BrowserContext ctx = browser.newContext(new Browser.NewContextOptions()
+                    .setViewportSize(1440, 900));
+            contextTL.set(ctx);
+
+            Page page = ctx.newPage();
+            page.setDefaultTimeout(ConfigReader.getTimeout());
+            attachNetworkListener(page);
+            pageTL.set(page);
         }
-        browserTL.set(browser);
+    }
 
-        BrowserContext ctx = browser.newContext(new Browser.NewContextOptions()
-                .setViewportSize(1440, 900));
-        contextTL.set(ctx);
-
-        Page page = ctx.newPage();
-        page.setDefaultTimeout(ConfigReader.getTimeout());
-
-        // ── Network listener: capture order_id from CRM API responses ──────────
-        // The checkout and upsell submissions return JSON like:
-        //   {"success": true, "crm_response": {"order_id": "1234567", ...}}
-        // We listen to responses and extract order_id, customer data, totals, etc.
+    /** Registers the network response + request listeners. */
+    private static void attachNetworkListener(Page page) {
         page.onResponse(response -> {
             try {
                 String url = response.url();
                 int status = response.status();
-                
-                // Capture from successful responses and redirects
                 if ((status >= 200 && status < 300) || (status >= 300 && status < 400)) {
                     captureOrderDataFromResponse(response, url);
-                }
-                // Log other responses for debugging if they're API calls
-                else if (status >= 400 && url.contains("api")) {
+                } else if (status >= 400 && url.contains("api")) {
                     System.out.println("⚠ API error response [" + status + "]: " + url);
-                }
-            } catch (Exception ignored) {
-                // Network listener must never crash the test
-            }
-        });
-        
-        // Also capture from request bodies (for diagnostics)
-        page.onRequest(request -> {
-            try {
-                String url = request.url();
-                String method = request.method();
-                if ((method.equals("POST") && (url.contains("place-order") || url.contains("upsell"))) 
-                    && System.getProperty("debug.requests", "false").equals("true")) {
-                    System.out.println("📤 Request: " + method + " " + url);
                 }
             } catch (Exception ignored) {}
         });
 
-        pageTL.set(page);
+        page.onRequest(request -> {
+            try {
+                String url = request.url();
+                String method = request.method();
+                if (method.equals("POST") && (url.contains("place-order") || url.contains("upsell"))
+                        && System.getProperty("debug.requests", "false").equals("true")) {
+                    System.out.println("📤 Request: " + method + " " + url);
+                }
+            } catch (Exception ignored) {}
+        });
     }
+
 
     /** Extracts order_id value from a JSON string without requiring a JSON library. */
     private static String extractOrderId(String json) {

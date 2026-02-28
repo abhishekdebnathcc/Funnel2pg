@@ -1,16 +1,18 @@
 package com.funnel2pg.utils;
 
 import com.funnel2pg.config.ConfigReader;
+
 import java.io.File;
 import java.nio.file.Paths;
 
 /**
- * Opens the Extent Report in the user's browser after test execution.
+ * Opens the Extent Report in Chrome after test execution.
  *
- * Key design: we open Chrome in background (non-blocking) and do NOT
- * wait for the process to exit. On macOS, `open -a "Google Chrome"` opens
- * a new tab in the existing Chrome window and returns immediately — Chrome
- * itself stays running so the tab is never closed.
+ * FIX for report delay:
+ *   - Removed inheritIO() — that caused Maven's JVM to wait for Chrome's stdout/stderr,
+ *     which blocked process exit until Chrome was closed (potentially minutes).
+ *   - redirectErrorStream(false) + no inheritIO = fire-and-forget; Chrome opens
+ *     immediately and Maven exits cleanly.
  */
 public class ReportOpener {
 
@@ -35,7 +37,6 @@ public class ReportOpener {
             } else {
                 openLinux(fileUrl);
             }
-
         } catch (Exception e) {
             System.out.println("⚠ Could not open report: " + e.getMessage());
         }
@@ -43,16 +44,16 @@ public class ReportOpener {
 
     private static void openMac(String fileUrl) {
         try {
-            // `-g` → open without bringing Chrome to the foreground (keeps existing focus)
-            // We do NOT call waitFor() – Chrome stays open because we're not the process keeping it alive.
+            // No inheritIO() — fire and forget; Maven does not wait for Chrome
             new ProcessBuilder("open", "-a", "Google Chrome", fileUrl)
-                    .inheritIO()
+                    .redirectErrorStream(false)
                     .start();
             System.out.println("✅ Report opened in Chrome");
         } catch (Exception e) {
             try {
-                // Fallback: use the default browser
-                new ProcessBuilder("open", fileUrl).inheritIO().start();
+                new ProcessBuilder("open", fileUrl)
+                        .redirectErrorStream(false)
+                        .start();
                 System.out.println("✅ Report opened in default browser");
             } catch (Exception ex) {
                 System.out.println("⚠ Could not open report browser: " + ex.getMessage());
@@ -63,11 +64,14 @@ public class ReportOpener {
     private static void openWindows(String fileUrl) {
         try {
             new ProcessBuilder("cmd", "/c", "start", "chrome", fileUrl)
-                    .inheritIO().start();
+                    .redirectErrorStream(false)
+                    .start();
             System.out.println("✅ Report opened in Chrome");
         } catch (Exception e) {
             try {
-                new ProcessBuilder("cmd", "/c", "start", fileUrl).inheritIO().start();
+                new ProcessBuilder("cmd", "/c", "start", fileUrl)
+                        .redirectErrorStream(false)
+                        .start();
                 System.out.println("✅ Report opened in default browser");
             } catch (Exception ex) {
                 System.out.println("⚠ Could not open report: " + ex.getMessage());
@@ -77,11 +81,15 @@ public class ReportOpener {
 
     private static void openLinux(String fileUrl) {
         try {
-            new ProcessBuilder("google-chrome", fileUrl).inheritIO().start();
+            new ProcessBuilder("google-chrome", fileUrl)
+                    .redirectErrorStream(false)
+                    .start();
             System.out.println("✅ Report opened in Chrome");
         } catch (Exception e) {
             try {
-                new ProcessBuilder("xdg-open", fileUrl).inheritIO().start();
+                new ProcessBuilder("xdg-open", fileUrl)
+                        .redirectErrorStream(false)
+                        .start();
                 System.out.println("✅ Report opened in default browser");
             } catch (Exception ex) {
                 System.out.println("⚠ Could not open report: " + ex.getMessage());

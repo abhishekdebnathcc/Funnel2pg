@@ -1,154 +1,210 @@
 package com.funnel2pg.pages;
 
+import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import java.util.List;
 
 /**
- * UpsellPage – represents an upsell/OTO page in the funnel.
+ * UpsellPage - upsell/OTO page in the funnel.
  *
- * DETECTION (from real DOM inspection):
- *   Primary  → <meta name="page-type" content="upsell" />
- *   Fallback → URL path ends with /upsell or contains /upsell
- *   Fallback → form[name="is-upsell"] exists on page
+ * VERIFIED against live DOM of /2PageCheckout/upsell2:
  *
- * ACTIONS (exact selectors from live DOM):
- *   1. addProductToUpsell()   → clicks  a.btn-upsell  ("Add To My Order.")
- *   2. selectUpsellShipping() → clicks  div.shipping-option.shipping-method-div
- *   3. acceptAndContinue()    → clicks  button.submit-upsell-btn
- *      (decline button is #no-btn / button.decline-button – do NOT click)
+ *   DETECTION:
+ *     <meta name="page-type" content="upsell" />
+ *     URL contains /upsell
+ *     form#upsell_form or form[action='place-upsell'] present
+ *
+ *   PRODUCT:
+ *     <div class="sel-prod product product1"> inside <product> tag.
+ *     JS auto-activates the product on page load.
+ *     There is NO a.btn-upsell on this template.
+ *     If not auto-activated, we click the card.
+ *
+ *   SHIPPING:
+ *     <div class="shipping-option shipping-method-div payment-section">
+ *     jQuery click handler sets hidden shippingId input + adds shipping-active class.
+ *     Must click one before submitting. Toggling off (re-clicking active) breaks form.
+ *
+ *   ACCEPT / SUBMIT:
+ *     <button type="submit" class="send-btn">Add to My Order</button>
+ *     Inside form#upsell_form (action="place-upsell").
+ *     Scoped to #upsell_form to avoid matching checkout send-btn.
+ *
+ *   DECLINE:
+ *     <button class="decline-button" type="button">No Thanks, I'll Pass</button>
+ *     Never clicked by automation.
  */
 public class UpsellPage extends BasePage {
 
-    // ── Exact selectors from live DOM ─────────────────────────────────────────
-
-    /** Meta tag that identifies this page as an upsell. */
-    private static final String META_PAGE_TYPE = "meta[name='page-type']";
-
-    /** The "Add To My Order" product button on the upsell card. */
-    private static final String ADD_PRODUCT_BTN = "a.btn-upsell";
-
-    /** Shipping option rows – click to select. */
+    private static final String META_PAGE_TYPE  = "meta[name='page-type']";
+    private static final String PRODUCT_CARD    = ".sel-prod";
     private static final String SHIPPING_OPTION = "div.shipping-option.shipping-method-div";
 
-    /** The primary submit button: "COMPLETE YOUR SECURE PURCHASE". */
-    private static final String ACCEPT_BTN = "button.submit-upsell-btn";
+    // Submit button scoped to upsell form; fallback to any send-btn
+    private static final String ACCEPT_BTN      = "#upsell_form button.send-btn";
+    private static final String ACCEPT_BTN_FB   = "form[action='place-upsell'] button.send-btn";
+    private static final String ACCEPT_BTN_FB2  = "button.send-btn";
 
-    /** Decline link – "No thank you…" – used only for detection, never clicked. */
-    private static final String DECLINE_BTN = "#no-btn, button.decline-button";
-
-    /** The upsell form. */
-    private static final String UPSELL_FORM = "form[name='is-upsell'], form.is-upsell";
-
-    // ─────────────────────────────────────────────────────────────────────────
+    private static final String UPSELL_FORM     = "form#upsell_form, form[action='place-upsell']";
 
     public UpsellPage(Page page) { super(page); }
 
-    // ── Page Detection ────────────────────────────────────────────────────────
+    // ---- Detection ----------------------------------------------------------
 
-    /**
-     * Returns true ONLY when on an upsell page.
-     *
-     * Strategy (in priority order):
-     *  1. <meta name="page-type" content="upsell"> – the most reliable signal
-     *  2. URL path contains "/upsell"
-     *  3. form[name="is-upsell"] present on page
-     */
-    public boolean isUpsellPage() {
+    /** Returns "Name  $price" for the upsell product being offered on this page. */
+    public String getUpsellProductName() {
         try {
-            // 1. Meta tag check – definitive
-            String pageType = page.getAttribute(META_PAGE_TYPE, "content");
-            if ("upsell".equalsIgnoreCase(pageType)) {
-                return true;
-            }
-        } catch (Exception ignored) { }
-
+            var prod = page.locator("product").first();
+            String name  = prod.getAttribute("attr-name");
+            String price = prod.getAttribute("attr-sale-price");
+            if (price == null || price.equals("0") || price.isEmpty())
+                price = prod.getAttribute("attr-price");
+            if (name != null && !name.trim().isEmpty())
+                return formatItem(name.trim(), price);
+        } catch (Exception ignored) {}
         try {
-            // 2. URL check
-            if (getCurrentUrl().toLowerCase().contains("/upsell")) {
-                return true;
-            }
-        } catch (Exception ignored) { }
-
+            String name = page.locator(".title-block__main").first().textContent().trim();
+            if (!name.isEmpty() && !name.equals("PRODUCT NAME")) return name;
+        } catch (Exception ignored) {}
         try {
-            // 3. Form name check
-            if (page.locator(UPSELL_FORM).count() > 0) {
-                return true;
-            }
-        } catch (Exception ignored) { }
+            return page.locator("h1, h2, h3").first().textContent().trim();
+        } catch (Exception ignored) {}
+        return "Upsell Product";
+    }
 
+    private String formatItem(String name, String price) {
+        if (price == null || price.trim().isEmpty() || price.equals("0")) return name;
+        String p = price.trim();
+        return p.startsWith("$") ? name + "  " + p : name + "  $" + p;
+    }
+
+        public boolean isUpsellPage() {
+        try {
+            String pt = page.getAttribute(META_PAGE_TYPE, "content");
+            if ("upsell".equalsIgnoreCase(pt)) return true;
+        } catch (Exception ignored) {}
+        try {
+            if (getCurrentUrl().toLowerCase().contains("/upsell")) return true;
+        } catch (Exception ignored) {}
+        try {
+            if (page.locator(UPSELL_FORM).count() > 0) return true;
+        } catch (Exception ignored) {}
         return false;
     }
 
-    // ── Upsell Actions ────────────────────────────────────────────────────────
+    // ---- Step 1: Product ----------------------------------------------------
 
     /**
-     * Step 1: Click "Add To My Order." button (a.btn-upsell) to select the product.
+     * Ensures the product card is active.
+     * JS auto-activates .sel-prod on page load. We verify and click if needed.
+     * No a.btn-upsell exists on this template.
      */
     public void addProductToUpsell() {
         try {
-            var btn = page.locator(ADD_PRODUCT_BTN);
-            if (btn.count() > 0) {
-                btn.first().click();
-                page.waitForTimeout(800);
-                System.out.println("✓ Upsell product added (a.btn-upsell clicked)");
+            page.waitForSelector(PRODUCT_CARD,
+                    new Page.WaitForSelectorOptions()
+                            .setState(com.microsoft.playwright.options.WaitForSelectorState.VISIBLE)
+                            .setTimeout(8000));
+            Locator card = page.locator(PRODUCT_CARD).first();
+            String classes = card.getAttribute("class");
+            if (classes != null && classes.contains("active")) {
+                System.out.println("i Upsell product already active (pre-selected by JS)");
             } else {
-                System.out.println("ℹ a.btn-upsell not found – product may auto-select");
+                card.click();
+                page.waitForTimeout(600);
+                System.out.println("i Upsell product clicked to activate");
             }
         } catch (Exception e) {
-            System.out.println("⚠ addProductToUpsell: " + e.getMessage());
+            System.out.println("! addProductToUpsell: " + e.getMessage());
         }
     }
 
+    // ---- Step 2: Shipping ---------------------------------------------------
+
     /**
-     * Step 2: Click the shipping option row to select shipping.
-     * Uses div.shipping-option.shipping-method-div – clicks first available option.
+     * Selects the first available shipping option if none is already active.
+     * Guards against re-clicking an already-active option (jQuery toggles it off).
      */
     public void selectUpsellShipping() {
         try {
-            var options = page.locator(SHIPPING_OPTION);
+            Locator options = page.locator(SHIPPING_OPTION);
             int count = options.count();
-            if (count > 0) {
-                options.first().click();
-                page.waitForTimeout(500);
-                System.out.println("✓ Upsell shipping selected (" + count + " option(s) available)");
-            } else {
-                System.out.println("ℹ No shipping options found on upsell page");
+            if (count == 0) {
+                System.out.println("i No shipping options on upsell – skipping");
+                return;
             }
+            // Check if any already has shipping-active
+            for (int i = 0; i < count; i++) {
+                String cls = options.nth(i).getAttribute("class");
+                if (cls != null && cls.contains("shipping-active")) {
+                    System.out.println("i Upsell shipping already active – skipping click (" + count + " options)");
+                    return;
+                }
+            }
+            options.first().click();
+            page.waitForTimeout(500);
+            System.out.println("i Upsell shipping selected (" + count + " options available)");
         } catch (Exception e) {
-            System.out.println("ℹ selectUpsellShipping: " + e.getMessage());
+            System.out.println("! selectUpsellShipping: " + e.getMessage());
         }
     }
+
+    // ---- Step 3: Accept & Continue -----------------------------------------
 
     /**
-     * Step 3: Click "COMPLETE YOUR SECURE PURCHASE" (button.submit-upsell-btn)
-     * to submit the upsell order.
+     * Clicks "Add to My Order" (button.send-btn inside form#upsell_form).
+     * Falls back to form[action='place-upsell'] button.send-btn then any send-btn.
      */
     public void acceptAndContinue() {
-        try {
-            var btn = page.locator(ACCEPT_BTN);
-            if (btn.count() > 0) {
-                btn.first().click();
-                page.waitForTimeout(1000);
-                System.out.println("✓ Upsell accepted (button.submit-upsell-btn clicked)");
-            } else {
-                System.out.println("⚠ button.submit-upsell-btn not found");
-            }
-        } catch (Exception e) {
-            System.out.println("⚠ acceptAndContinue: " + e.getMessage());
+        // Capture the place-upsell response so we can diagnose any CRM errors
+        final String[] crmResponse = {null};
+        page.onResponse(response -> {
+            try {
+                if (response.url().contains("place-upsell")) {
+                    String body = response.text();
+                    crmResponse[0] = "HTTP " + response.status() + " " + response.url() + " -> " + body;
+                }
+            } catch (Exception ignored) {}
+        });
+
+        String[] selectors = { ACCEPT_BTN, ACCEPT_BTN_FB, ACCEPT_BTN_FB2 };
+        for (String sel : selectors) {
+            try {
+                Locator btn = page.locator(sel).first();
+                if (btn.count() > 0 && btn.isVisible()) {
+                    String label = btn.textContent().trim().replaceAll("\\s+", " ");
+                    btn.scrollIntoViewIfNeeded();
+                    btn.click();
+                    // Wait briefly for the AJAX call to fire and respond
+                    page.waitForTimeout(1500);
+                    if (crmResponse[0] != null) {
+                        System.out.println("  CRM Response: " + crmResponse[0]);
+                    }
+                    System.out.println("i Upsell accepted via [" + sel + "] label='" + label + "'");
+                    return;
+                }
+            } catch (Exception ignored) {}
         }
+        // Diagnostic: log all visible buttons
+        System.out.println("! No accept button matched. Visible buttons on page:");
+        try {
+            for (Locator b : page.locator("button").all()) {
+                try {
+                    if (b.isVisible())
+                        System.out.println("  button class=[" + b.getAttribute("class") + "] text='" + b.textContent().trim() + "'");
+                } catch (Exception ignored) {}
+            }
+        } catch (Exception ignored) {}
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
+    // ---- Helpers ------------------------------------------------------------
 
-    /** Returns text labels of all shipping options (for logging). */
     public List<String> getAvailableShippingMethods() {
         try {
-            var labels = page.locator(SHIPPING_OPTION + " label.shipping-title").all();
-            var methods = new java.util.ArrayList<String>();
-            for (var l : labels) {
-                try { methods.add(l.textContent().trim()); } catch (Exception ignored) { }
-            }
-            return methods;
+            List<String> result = new java.util.ArrayList<>();
+            for (Locator opt : page.locator(SHIPPING_OPTION + " .shipping-title").all())
+                try { result.add(opt.textContent().trim()); } catch (Exception ignored) {}
+            return result;
         } catch (Exception e) {
             return java.util.Collections.emptyList();
         }

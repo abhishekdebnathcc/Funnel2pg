@@ -44,15 +44,14 @@ public class LandingPage extends BasePage {
      * State is selected by value (e.g. "CA") since the select is populated dynamically.
      */
     public void fillProspectFormAndSubmit(String firstName, String lastName, String address,
-                                          String city, String state, String zip,
+                                          String city, String zip,
                                           String phone, String email) {
         safeFill(INPUT_FIRST_NAME, firstName);
         safeFill(INPUT_LAST_NAME,  lastName);
         safeFill(INPUT_ADDRESS,    address);
 
-        // Country defaults to US – wait for state dropdown to populate then select
-        page.waitForTimeout(800);
-        safeSelectByValue(SELECT_STATE, state);
+        // Pick country + state randomly from the live dropdown
+        selectRandomCountryAndState();
 
         safeFill(INPUT_CITY,  city);
         safeFill(INPUT_ZIP,   zip);
@@ -98,6 +97,71 @@ public class LandingPage extends BasePage {
         }
     }
 
+    /**
+     * Polls until the given <select> has at least minOptions <option> elements,
+     * or timeoutMs elapses. Ensures JS-populated dropdowns are ready before selecting.
+     */
+    private void waitForDropdownOptions(String selector, int minOptions, long timeoutMs) {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                int count = page.locator(selector + " option").count();
+                if (count >= minOptions) {
+                    System.out.println("i State dropdown ready (" + count + " options)");
+                    return;
+                }
+            } catch (Exception ignored) {}
+            page.waitForTimeout(200);
+        }
+        System.out.println("⚠ State dropdown did not populate within " + timeoutMs + "ms");
+    }
+
+
+    /**
+     * Reads live country dropdown options, picks one at random, selects it,
+     * waits for the state dropdown to populate, then picks a random state.
+     * Returns [countryCode, stateCode] so the caller can log them.
+     */
+    public String[] selectRandomCountryAndState() {
+        try {
+            // Collect all valid country options (skip blank placeholder)
+            java.util.List<String> countryCodes = new java.util.ArrayList<>();
+            for (var opt : page.locator(SELECT_COUNTRY + " option").all()) {
+                String val = opt.getAttribute("value");
+                if (val != null && !val.trim().isEmpty()) countryCodes.add(val.trim());
+            }
+            if (countryCodes.isEmpty()) {
+                System.out.println("✗ No country options found – defaulting to US");
+                return new String[]{"US", "CA"};
+            }
+            String countryCode = countryCodes.get(new java.util.Random().nextInt(countryCodes.size()));
+            safeSelectByValue(SELECT_COUNTRY, countryCode);
+            page.waitForTimeout(600);
+
+            // Wait for state dropdown to populate
+            java.util.List<String> stateCodes = new java.util.ArrayList<>();
+            long deadline = System.currentTimeMillis() + 5000;
+            while (System.currentTimeMillis() < deadline) {
+                for (var opt : page.locator(SELECT_STATE + " option").all()) {
+                    String val = opt.getAttribute("value");
+                    if (val != null && !val.trim().isEmpty()) stateCodes.add(val.trim());
+                }
+                if (!stateCodes.isEmpty()) break;
+                page.waitForTimeout(300);
+                stateCodes.clear();
+            }
+
+            String stateCode = stateCodes.isEmpty() ? "" :
+                stateCodes.get(new java.util.Random().nextInt(stateCodes.size()));
+            if (!stateCode.isEmpty()) safeSelectByValue(SELECT_STATE, stateCode);
+
+            System.out.println("i Country: " + countryCode + "  State: " + stateCode);
+            return new String[]{countryCode, stateCode};
+        } catch (Exception e) {
+            System.out.println("✗ selectRandomCountryAndState: " + e.getMessage());
+            return new String[]{"US", "CA"};
+        }
+    }
     private void safeSelectByValue(String selector, String value) {
         try {
             page.locator(selector).selectOption(new SelectOption().setValue(value));

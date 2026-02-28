@@ -42,6 +42,10 @@ public class CheckoutStepDefs {
     private LandingPage  landingPage;
     private CheckoutPage checkoutPage;
     private UpsellPage   upsellPage;
+
+    // Tracks all products ordered with their type label (Main, Cross-sell, Upsell)
+    // Each entry: [label, productName]  e.g. ["Main Product", "Wrist Watch $1.75"]
+    private final java.util.List<String[]> orderedItems = new java.util.ArrayList<>();
     private ThankYouPage thankYouPage;
 
     private boolean onThankYouPage      = false;
@@ -123,12 +127,12 @@ public class CheckoutStepDefs {
     @When("I fill in the prospect form with valid shipping details")
     public void fillProspectForm() {
         divider("📝 FILLING LANDING PAGE PROSPECT FORM");
+        DataRandomizer.printIdentity();
         landingPage.fillProspectFormAndSubmit(
                 DataRandomizer.getCustomerField("firstName"),
                 DataRandomizer.getCustomerField("lastName"),
                 DataRandomizer.getCustomerField("address"),
                 DataRandomizer.getCustomerField("city"),
-                DataRandomizer.getCustomerField("state"),
                 DataRandomizer.getCustomerField("zipCode"),
                 DataRandomizer.getCustomerField("phone"),
                 DataRandomizer.getCustomerField("email")
@@ -138,15 +142,18 @@ public class CheckoutStepDefs {
 
     @When("I click Rush My Order")
     public void clickRushMyOrder() {
-        // Form is submitted in fillProspectFormAndSubmit; wait for redirect to checkout
-        divider("🚀 RUSH MY ORDER SUBMITTED – Waiting for /checkout redirect");
-        Predicate<String> leftLanding = url -> !url.toLowerCase().contains("/landing");
+        // Form is submitted inside fillProspectFormAndSubmit; wait for the server redirect
+        divider("🚀 RUSH MY ORDER SUBMITTED – Waiting for server redirect");
+        String landingUrl = page.url();
         try {
-            page.waitForURL(leftLanding, new Page.WaitForURLOptions().setTimeout(20_000));
+            // Wait until URL changes away from current page
+            page.waitForURL(url -> !url.equals(landingUrl),
+                    new Page.WaitForURLOptions().setTimeout(20_000));
         } catch (Exception e) {
             page.waitForLoadState();
             page.waitForTimeout(3_000);
         }
+        captureAndLogPageError("After Landing Submit");
         log("✓ Post-submit URL: " + page.url());
     }
 
@@ -173,7 +180,7 @@ public class CheckoutStepDefs {
         log("📌 page-type : " + pageType);
         assertTrue(
                 "checkout".equals(pageType) || url.toLowerCase().contains("/checkout"),
-                "Expected redirect to /checkout after landing form submit, got: " + url
+                "Expected redirect to checkout after landing form submit, got: " + url
         );
         log("✓ On checkout page");
     }
@@ -186,6 +193,17 @@ public class CheckoutStepDefs {
     public void selectProduct() {
         checkoutPage.selectFirstAvailableProduct();
         log("✓ Product selected");
+        // Record main product(s)
+        for (String name : checkoutPage.getSelectedMainProductNames()) {
+            orderedItems.add(new String[]{"Main Product", name});
+        }
+        // Click all cross-sell products then read which were selected
+        checkoutPage.selectAllCrossSellProducts();
+        java.util.List<String> crossNames = checkoutPage.getSelectedCrossSellNames();
+        for (String csName : crossNames) {
+            orderedItems.add(new String[]{"Cross-sell", csName});
+        }
+        if (!crossNames.isEmpty()) log("✓ Cross-sell products selected: " + crossNames.size());
     }
 
     @When("I select a shipping method")
@@ -324,22 +342,49 @@ public class CheckoutStepDefs {
             }
 
             log("✓ On UPSELL PAGE – processing offer");
-            log("  ➤ Step 1: Add product (a.btn-upsell)");
+            log("  ➤ Step 1: Activate product (.sel-prod)");
+            String upsellName = upsellPage.getUpsellProductName();
             upsellPage.addProductToUpsell();
-            log("  ➤ Step 2: Select shipping (div.shipping-option.shipping-method-div)");
+            log("  ➤ Step 2: Select shipping (.shipping-option.shipping-method-div)");
             upsellPage.selectUpsellShipping();
-            log("  ➤ Step 3: Accept & Continue (button.submit-upsell-btn)");
+            log("  ➤ Step 3: Submit (#upsell_form button.send-btn)");
             upsellPage.acceptAndContinue();
+            orderedItems.add(new String[]{"Upsell", upsellName});
 
-            Predicate<String> urlChanged = url -> !url.equals(currentUrl);
+            // Upsell form submits via AJAX (place-upsell), then JS navigates.
+            // Wait for network idle so the CRM response + redirect chain settles.
             try {
-                page.waitForURL(urlChanged, new Page.WaitForURLOptions().setTimeout(15_000));
-                log("  ✓ Redirected to: " + page.url());
-            } catch (Exception e) {
-                page.waitForLoadState();
-                page.waitForTimeout(2_000);
-                if (page.url().equals(currentUrl)) {
-                    logWarn("URL unchanged after upsell submit – breaking loop");
+                page.waitForLoadState(com.microsoft.playwright.options.LoadState.NETWORKIDLE,
+                        new Page.WaitForLoadStateOptions().setTimeout(20_000));
+            } catch (Exception ignored) {}
+
+            String newUrl = page.url();
+            if (!newUrl.equals(currentUrl)) {
+                log("  ✓ Redirected to: " + newUrl);
+            } else {
+                // URL still same – this funnel uses in-place DOM swap (JS replaces
+                // meta[page-type] without a navigation). Poll for up to 10s.
+                String afterType = "upsell";
+                long deadline = System.currentTimeMillis() + 10_000;
+                while (System.currentTimeMillis() < deadline) {
+                    page.waitForTimeout(500);
+                    newUrl = page.url();
+                    if (!newUrl.equals(currentUrl)) break;   // navigation happened
+                    afterType = getMetaPageType();
+                    if (!"upsell".equals(afterType)) break;  // DOM swapped in-place
+                }
+
+                if (!newUrl.equals(currentUrl)) {
+                    log("  ✓ Redirected to: " + newUrl);
+                } else if ("thank-you".equals(afterType) || thankYouPage.isThankYouPageDisplayed()) {
+                    log("  ✓ Page transitioned to thank-you in-place");
+                    onThankYouPage = true;
+                    captureAndLogOrderDetails();
+                    break;
+                } else if (!"upsell".equals(afterType) && !afterType.isEmpty()) {
+                    log("  ✓ Page type changed to: " + afterType);
+                } else {
+                    logWarn("URL and page-type unchanged after 10s – breaking loop");
                     break;
                 }
             }
@@ -415,6 +460,7 @@ public class CheckoutStepDefs {
             String city     = thankYouPage.getCity();
             String state    = thankYouPage.getState();
             String zip      = thankYouPage.getZip();
+            String country  = thankYouPage.getCountry();
             java.util.List<String> items = thankYouPage.getOrderItemLines();
 
             System.out.println("");
@@ -425,8 +471,18 @@ public class CheckoutStepDefs {
             System.out.println("│  Name          : " + name);
             System.out.println("│  Email         : " + email);
             System.out.println("│  Phone         : " + phone);
-            System.out.println("│  Address       : " + address + ", " + city + ", " + state + " " + zip);
-            if (items.isEmpty()) {
+            String addrLine = address;
+            if (city != null && !city.equals("N/A") && !city.isEmpty()) addrLine += ", " + city;
+            addrLine += ", " + state + " " + zip;
+            System.out.println("│  Address       : " + addrLine);
+            System.out.println("│  Country       : " + country);
+            // Print items with labels from tracking list if available,
+            // otherwise fall back to thank-you page DOM items
+            if (!orderedItems.isEmpty()) {
+                for (String[] entry : orderedItems) {
+                    System.out.printf("│  %-14s: %s%n", entry[0], entry[1]);
+                }
+            } else if (items.isEmpty()) {
                 System.out.println("│  Items         : " + thankYouPage.getOrderItems());
             } else {
                 for (String item : items) System.out.println("│  Item          : " + item);
@@ -436,8 +492,20 @@ public class CheckoutStepDefs {
             System.out.println("│  Total         : " + total);
             System.out.println("└─────────────────────────────────────────────────────┘");
 
+            // Build item rows - use tracked labels if available, else fall back to DOM
             StringBuilder itemRows = new StringBuilder();
-            if (items.isEmpty()) {
+            if (!orderedItems.isEmpty()) {
+                for (String[] entry : orderedItems) {
+                    String itemLabel = entry[0];
+                    String itemName  = entry[1];
+                    String color = itemLabel.equals("Main Product") ? "#e8f5e9"
+                                 : itemLabel.equals("Cross-sell")   ? "#fff8e1"
+                                 :                                    "#f3e5f5"; // Upsell
+                    itemRows.append("<tr style='background:").append(color).append(";'>")
+                            .append("<td><em>").append(itemLabel).append("</em></td>")
+                            .append("<td colspan='2'>").append(itemName).append("</td></tr>");
+                }
+            } else if (items.isEmpty()) {
                 itemRows.append("<tr><td>Items</td><td colspan='2'>")
                         .append(thankYouPage.getOrderItems()).append("</td></tr>");
             } else {
@@ -464,6 +532,7 @@ public class CheckoutStepDefs {
                 + "<tr><td>City</td><td colspan='2'>" + city + "</td></tr>"
                 + "<tr><td>State</td><td colspan='2'>" + state + "</td></tr>"
                 + "<tr><td>Zip</td><td colspan='2'>" + zip + "</td></tr>"
+                + "<tr><td>Country</td><td colspan='2'>" + country + "</td></tr>"
                 + "<tr style='background:#fff3e0;'><td colspan='3'><strong>🛒 Items Ordered</strong></td></tr>"
                 + itemRows
                 + "<tr style='background:#fce4ec;'><td colspan='3'><strong>💰 Order Totals</strong></td></tr>"
@@ -499,28 +568,157 @@ public class CheckoutStepDefs {
         }
     }
 
-    private boolean detectAlreadyPurchasedError() {
-        try {
-            String selectors =
-                    "div:has-text('already purchased this trial'), " +
-                    "span:has-text('already purchased this trial'), " +
-                    "p:has-text('already purchased this trial'), " +
-                    ".error:has-text('already purchased'), " +
-                    "#inline-error:has-text('already purchased'), " +
-                    "[class*='error']:has-text('already purchased')";
+    // =========================================================================
+    // ERROR DETECTION & REPORTING
+    // =========================================================================
 
-            if (page.locator(selectors).count() > 0) {
-                String text = page.locator(selectors).first().textContent().trim();
-                logError("Already-purchased error: " + text);
-                errorCode = extractErrorCode(text);
-                if (errorCode.isEmpty()) errorCode = "ERR_TRIAL_OFFER_ALREADY_PURCHASED";
-                return true;
+    /**
+     * Scans the current page for any visible error messages using broad selectors.
+     * Captures the text, extracts any error code, takes a screenshot, and logs
+     * a rich formatted panel to the Extent report.
+     *
+     * @param context  human-readable label indicating where in the flow this was called
+     * @return true if at least one error was found and captured
+     */
+    private boolean captureAndLogPageError(String context) {
+        try {
+            // Broad selectors covering inline errors, modal errors, toast errors, etc.
+            String[] errorSelectors = {
+                "#formError",
+                "#inline-error",
+                ".error-message",
+                ".alert-danger",
+                "[class*='error-msg']",
+                "[class*='error-text']",
+                "[class*='form-error']",
+                "[id*='error']",
+                "[class*='alert'][class*='error']",
+                ".invalid-feedback",
+                "[class*='decline']",
+                "[class*='card-error']",
+                "[class*='payment-error']",
+                "div[style*='color:red']",
+                "div[style*='color: red']",
+                "span[style*='color:red']",
+                "span[style*='color: red']"
+            };
+
+            java.util.List<String> found = new java.util.ArrayList<>();
+            for (String sel : errorSelectors) {
+                try {
+                    var locator = page.locator(sel);
+                    int count = locator.count();
+                    for (int i = 0; i < count; i++) {
+                        try {
+                            var el = locator.nth(i);
+                            if (el.isVisible()) {
+                                String text = el.textContent().trim().replaceAll("\\s+", " ");
+                                if (!text.isEmpty() && !found.contains(text)) {
+                                    found.add(text);
+                                }
+                            }
+                        } catch (Exception ignored) {}
+                    }
+                } catch (Exception ignored) {}
             }
 
-            String body = page.locator("body").textContent().toLowerCase();
-            if (body.contains("already purchased this trial")) {
-                logError("Already-purchased error detected via body text");
+            // Also check body text for known error phrases
+            if (found.isEmpty()) {
+                try {
+                    String bodyText = page.locator("body").textContent().toLowerCase();
+                    String[] knownPhrases = {
+                        "already purchased this trial",
+                        "transaction was declined",
+                        "card was declined",
+                        "invalid card",
+                        "payment failed",
+                        "something went wrong",
+                        "error processing"
+                    };
+                    for (String phrase : knownPhrases) {
+                        if (bodyText.contains(phrase)) {
+                            found.add("(Detected in page body) " + phrase);
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
+
+            if (found.isEmpty()) return false;
+
+            // Extract error code from first message
+            String primaryMsg = found.get(0);
+            errorCode = extractErrorCode(primaryMsg);
+            if (errorCode.isEmpty() && primaryMsg.toLowerCase().contains("already purchased")) {
                 errorCode = "ERR_TRIAL_OFFER_ALREADY_PURCHASED";
+            }
+
+            // Console output
+            System.out.println("");
+            System.out.println("┌─────────────────────────────────────────────────────┐");
+            System.out.println("│                  ⚠ PAGE ERROR DETECTED              │");
+            System.out.println("│  Context : " + context);
+            System.out.println("│  URL     : " + page.url());
+            for (String msg : found) {
+                System.out.println("│  Error   : " + msg);
+            }
+            if (!errorCode.isEmpty()) {
+                System.out.println("│  Code    : " + errorCode);
+            }
+            System.out.println("└─────────────────────────────────────────────────────┘");
+
+            // Extent report – rich HTML panel
+            var extentTest = ExtentReportManager.getTest();
+            if (extentTest != null) {
+                StringBuilder rows = new StringBuilder();
+                for (String msg : found) {
+                    rows.append("<tr><td style='padding:6px 10px;'>").append(msg).append("</td></tr>");
+                }
+                String errorPanel =
+                    "<div style='font-family:monospace;margin:8px 0;'>" +
+                    "<table style='width:100%;border-collapse:collapse;border:2px solid #c62828;border-radius:4px;overflow:hidden;'>" +
+                    "<thead><tr style='background:#c62828;color:white;font-weight:bold;'>" +
+                    "<th style='padding:8px 12px;text-align:left;'>&#x26A0; PAGE ERROR &nbsp;|&nbsp; Context: " + context + "</th></tr></thead>" +
+                    "<tbody style='background:#fff8f8;'>" +
+                    "<tr style='background:#ffebee;'><td style='padding:6px 10px;font-size:11px;color:#666;'>URL: " + page.url() + "</td></tr>" +
+                    rows +
+                    (errorCode.isEmpty() ? "" :
+                        "<tr style='background:#fce4ec;font-weight:bold;'>" +
+                        "<td style='padding:6px 10px;'>Error Code: " + errorCode + "</td></tr>") +
+                    "</tbody></table></div>";
+
+                extentTest.log(com.aventstack.extentreports.Status.WARNING, errorPanel);
+
+                // Screenshot of the error state
+                try {
+                    byte[] png = page.screenshot(
+                            new com.microsoft.playwright.Page.ScreenshotOptions().setFullPage(false));
+                    String safeName = "error_" + context.replaceAll("[^a-zA-Z0-9]", "_")
+                            + "_" + System.currentTimeMillis();
+                    String screenshotPath = ConfigReader.getReportsDir()
+                            + "/screenshots/" + safeName + ".png";
+                    java.nio.file.Files.write(java.nio.file.Paths.get(screenshotPath), png);
+                    extentTest.addScreenCaptureFromPath(
+                            "screenshots/" + safeName + ".png",
+                            "Error Screenshot – " + context);
+                } catch (Exception se) {
+                    System.out.println("⚠ Could not capture error screenshot: " + se.getMessage());
+                }
+            }
+
+            return true;
+
+        } catch (Exception e) {
+            System.out.println("⚠ captureAndLogPageError failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean detectAlreadyPurchasedError() {
+        try {
+            String body = page.locator("body").textContent().toLowerCase();
+            if (body.contains("already purchased this trial") || body.contains("already purchased")) {
+                errorCode = "ERR_TRIAL_OFFER_ALREADY_PURCHASED";
+                captureAndLogPageError("Already Purchased Check");
                 return true;
             }
             return false;
@@ -540,10 +738,14 @@ public class CheckoutStepDefs {
     }
 
     private String extractErrorCode(String msg) {
+        if (msg == null || msg.isEmpty()) return "";
         try {
-            if (msg.matches(".*ERR[-_]?\\d+.*"))
-                return msg.replaceAll(".*(ERR[-_]?\\d+).*", "$1");
-        } catch (Exception ignored) { }
+            // Match ERR-1234, ERR_1234, ERROR-123 patterns
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("(ERR(?:OR)?[-_]?\\d+)", java.util.regex.Pattern.CASE_INSENSITIVE)
+                .matcher(msg);
+            if (m.find()) return m.group(1).toUpperCase();
+        } catch (Exception ignored) {}
         return "";
     }
 
